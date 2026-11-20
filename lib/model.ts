@@ -50,6 +50,9 @@ export interface ModelConstants {
   maturity_range: number;
   maturity_days: number;
   unknown_age_days: number;
+  scarcity_days: number;
+  scarcity_max: number;
+  unknown_age_mult: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -61,13 +64,46 @@ export const MODEL: ModelConstants = {
   maturity_range: 0.4,
   maturity_days: 1095,
   unknown_age_days: 365,
+  scarcity_days: 240,
+  scarcity_max: 0.25,
+  unknown_age_mult: 1.04,
 };
 
+/**
+ * The category premium: what a dollar of TVL is worth in a protocol that may still issue a token,
+ * by the kind of protocol it is. Yield and RWA vaults and trading venues have issued some of the
+ * strongest launches, so their TVL carries a premium; commodity money and staking wrappers carry
+ * none. Matched on category keywords, never on a protocol's name.
+ */
+export function categoryPremium(category: string | null): number {
+  const c = (category ?? '').toLowerCase();
+  if (c.includes('rwa') || c.includes('real world')) return 1.12;
+  if (c.includes('basis') || c.includes('delta')) return 1.10;
+  if (c.includes('derivative') || c.includes('perpetual')) return 1.08;
+  if (c.includes('cdp') || c.includes('collateral') || c.includes('stable')) return 1.06;
+  if (c.includes('lending')) return 1.05;
+  if (c.includes('yield')) return 1.04;
+  if (c.includes('dex') || c.includes('liquidity')) return 1.02;
+  if (c.includes('insurance') || c.includes('prediction')) return 1.03;
+  return 1.0;
+}
+
+/**
+ * The scarcity multiplier: a protocol that grew large fast has had the least time to reward its
+ * users, so its yet-unissued token carries the most unclaimed value. Scales down to 1.0 at
+ `scarcity_days`, an unknown age gets `unknown_age_mult`.
+ */
+export function scarcityMult(age: number | null, model: ModelConstants): number {
+  if (age === null) return model.unknown_age_mult;
+  if (age >= model.scarcity_days) return 1;
+  return 1 + model.scarcity_max * (1 - age / model.scarcity_days);
+}
+
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-1';
+export const MODEL_VERSION = 'radar-2';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
-export const EARLY_ROWS = 160;
+export const EARLY_ROWS = 360;
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -100,9 +136,12 @@ export interface BoardRow {
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
+    category_premium: number;
+    scarcity_multiplier: number;
     age_days: number | null;
   };
   farm_steps: string[];
+  watchlist: boolean;
 }
 
 /** The dashboard's compact view of one row, with farm plans generated in the page. */
@@ -120,6 +159,9 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  category_premium: number;
+  scarcity_multiplier: number;
+  watchlist: boolean;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -141,6 +183,7 @@ export interface RadarData {
   model: ModelConstants;
   model_version: string;
   watchlist_size: number;
+  watchlist_on_board: number;
   board_size: number;
   early_size: number;
   live_size: number;
@@ -173,7 +216,7 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 }
 
 /** The three multipliers and the implied value one protocol gets under `model`. */
-export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
+export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; premium: number; scarcity: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
@@ -181,8 +224,10 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const base = protocol.tvl_usd * model.base_multiple;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
-  return { implied, growthPct, growthMult, maturityMult, age };
+  const premium = categoryPremium(protocol.category);
+  const scarcity = scarcityMult(age, model);
+  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * premium * scarcity));
+  return { implied, growthPct, growthMult, maturityMult, premium, scarcity, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -206,6 +251,7 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
 /** The headline sentence's figures: how many watchlist slugs, how many rows, how many live protocols. */
 export interface BoardSummary {
   watchlist_size: number;
+  watchlist_on_board: number;
   board_size: number;
   early_size: number;
   live_size: number;
@@ -230,8 +276,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
-    const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
-    return { p, implied, growthPct, growthMult, maturityMult, age };
+    const { implied, growthPct, growthMult, maturityMult, premium, scarcity, age } = impliedValue(p, snapshot.as_of, model);
+    return { p, implied, growthPct, growthMult, maturityMult, premium, scarcity, age };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -254,9 +300,12 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
+      category_premium: round4(s.premium),
+      scarcity_multiplier: round4(s.scarcity),
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
+    watchlist: snapshot.watchlist.includes(s.p.slug),
   }));
 }
 
@@ -273,6 +322,15 @@ export function stepText(step: FarmStep): string {
 /** The first chain a protocol names, or a neutral phrase. */
 function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
+}
+
+/** A first-transaction gas estimate for the chain: mainnet Ethereum costs, L2 and Solana cost less. */
+function gasFor(p: SnapshotProtocol): string {
+  const chains = p.chains.map((c) => c.toLowerCase());
+  if (chains.includes('ethereum')) return '$10-25';
+  if (chains.some((c) => c.includes('arbitrum') || c.includes('optimism') || c.includes('base') || c.includes('polygon'))) return '$0.10-1';
+  if (chains.includes('solana') || chains.includes('sui') || chains.includes('aptos')) return 'under $0.05';
+  return '$1-5';
 }
 
 /** How much capital one farm position needs, from the protocol's own TVL. */
@@ -320,7 +378,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   return [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
+      cost: `${gasFor(p)} of gas for the first transaction on ${chain}`,
       time: '5 minutes',
     },
     {
@@ -384,6 +442,9 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    category_premium: row.model.category_premium,
+    scarcity_multiplier: row.model.scarcity_multiplier,
+    watchlist: row.watchlist,
   };
 }
 
@@ -399,6 +460,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     model,
     model_version: MODEL_VERSION,
     watchlist_size: snapshot.watchlist.length,
+    watchlist_on_board: board.filter((r) => r.watchlist).length,
     board_size: board.length,
     early_size: early,
     live_size: live.length,
