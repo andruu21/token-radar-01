@@ -1,27 +1,23 @@
 // token-radar-01 — the entry's program.
 //
-// What it does, in order:
-//   1. reads the sealed snapshot (/input/snapshot.json, or --input <file|dir>, or MAKEFUN_INPUT_DIR);
-//   2. scores it with the model in lib/model.ts into a ranked board of pre-token protocols;
-//   3. writes /output/board.json, the dashboard's data.js, the dashboard/ and screenshots/
-//      directories, and /output/dossier.json through the vendored make.fun library.
-//
-// The board it writes is one the gate takes: every watchlist slug covered, ranks 1..N, implied
-// value that never rises as rank ascends, and 3-12 farm steps of 20-600 characters per row.
+// In order: it reads the sealed snapshot, scores it with the model in lib/score.ts into a ranked
+// board (lib/board.ts), and writes the four things the gate checks — board.json, data.js beside
+// the dashboard, the dashboard/ and screenshots/ directories, and dossier.json through the
+// vendored make.fun library, which the scorer rebuilds byte for byte.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { boardIssue, buildRadar, dataScript, readSnapshot } from './lib/board.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
-/** Where this repository's own dashboard/ and screenshots/ live. */
+/** This repository's own dashboard/ and screenshots/, copied into /output as the page stands. */
 const here = fileURLToPath(new URL('.', import.meta.url));
 
-/** The dossier's text cap: source past it is cut, so the dashboard's page stays small. */
+/** The dossier's text cap: source past it is cut, so the dashboard's page stays under it. */
 const TEXT_MAX_BYTES = 65_536;
 
-/** --name <value> out of the arguments, or `fallback` when the flag is absent. */
+/** --name <value> out of the arguments, or the fallback when the flag is absent. */
 function arg(name: string, fallback: string): string {
   const at = process.argv.indexOf(`--${name}`);
   if (at >= 0 && at + 1 < process.argv.length) return process.argv[at + 1]!;
@@ -29,7 +25,7 @@ function arg(name: string, fallback: string): string {
   return withEquals === undefined ? fallback : withEquals.slice(name.length + 3);
 }
 
-// The snapshot's location: /input inside the grader, a path of our own outside it.
+// The snapshot's location: /input in the grader's container, a path of our own outside it.
 const inputArg = arg('input', process.env.MAKEFUN_INPUT_DIR ?? '/input');
 const inputFile = inputArg.endsWith('.json') ? inputArg : join(inputArg, 'snapshot.json');
 if (!existsSync(inputFile)) {
@@ -37,11 +33,11 @@ if (!existsSync(inputFile)) {
   process.exit(2);
 }
 
-// Where everything lands: /output inside the grader, MAKEFUN_OUTPUT_DIR outside it.
+// Where everything lands: /output in the grader, MAKEFUN_OUTPUT_DIR on our own machine.
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-// Read, score, and refuse our own mistakes before anything is written.
-const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
+// Read the sealed bytes, score them, and refuse our own mistakes before anything is written.
+const snapshot = readSnapshot(inputFile);
 const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
@@ -53,7 +49,7 @@ mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
-/** Copy one directory's regular files into `to`, skipping dot-names the gate refuses. */
+/** Copy one directory's regular files into `to`, skipping the dot-names the gate refuses. */
 function copyFiles(from: string, to: string): string[] {
   if (!existsSync(from)) return [];
   mkdirSync(to, { recursive: true });
