@@ -328,6 +328,10 @@
     drawer.appendChild(el('div', { class: 'slugline', text: row.slug + ' · rank ' + row.rank + ' of ' + DATA.board_size + ' · ' + (row.category || 'Other') + ' on ' + (row.chains && row.chains.length ? row.chains.join(', ') : 'an unnamed chain') + (row.watchlist ? ' · on the house watchlist' : ' · early: under the watchlist floor') }));
     drawer.appendChild(el('div', { class: 'bigimp', text: fmtUsd(row.implied_value_usd) }));
     drawer.appendChild(el('div', { class: 'biglab', text: 'Implied value if the record stands' }));
+    var catRows = DATA.rows.filter(function (r) { return r.category === row.category; });
+    var catRank = catRows.filter(function (r) { return r.implied_value_usd > row.implied_value_usd; }).length + 1;
+    var share = Math.round((row.implied_value_usd / DATA.rows[0].implied_value_usd) * 1000) / 10;
+    drawer.appendChild(el('div', { class: 'slugline', text: '#' + catRank + ' of ' + catRows.length + ' in ' + (row.category || 'Other') + ' · ' + share + "% of the board's #1" }));
     drawer.appendChild(el('div', { class: 'facts' },
       el('div', { class: 'fact' }, el('div', { class: 'k', text: 'TVL' }), el('div', { class: 'v', text: fmtUsd(row.tvl_usd) })),
       el('div', { class: 'fact' }, el('div', { class: 'k', text: '7-day change' }), el('div', { class: 'v ' + (row.change_7d !== null && row.change_7d >= 0 ? 'up' : 'down'), text: fmtPct(row.change_7d) })),

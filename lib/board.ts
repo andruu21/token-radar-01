@@ -10,7 +10,7 @@ import type { Protocol, Snapshot } from './score.ts';
 import { CONSTANTS, indexBySlug, isRankable, MODEL_VERSION, valueOf } from './score.ts';
 
 /** How many early rows below the watchlist floor the board carries, the largest first. */
-export const EARLY_ROWS = 360;
+export const EARLY_ROWS = 360;  // 40 watchlist + 360 early = 400 rows, the strongest board the gate takes
 
 /** How many live-token protocols the page shows set aside, priced by the market. */
 export const LIVE_ROWS = 24;
